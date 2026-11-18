@@ -49,7 +49,14 @@ def init_db():
                 id BIGSERIAL PRIMARY KEY, link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
                 visited TIMESTAMPTZ NOT NULL DEFAULT NOW(), city VARCHAR(160), region VARCHAR(160),
                 country VARCHAR(160), country_code VARCHAR(8), latitude DOUBLE PRECISION,
-                longitude DOUBLE PRECISION, timezone VARCHAR(160), network VARCHAR(160))''')
+                longitude DOUBLE PRECISION, timezone VARCHAR(160), network VARCHAR(160),
+                browser_latitude DOUBLE PRECISION, browser_longitude DOUBLE PRECISION,
+                browser_accuracy DOUBLE PRECISION, browser_location_status VARCHAR(24))''')
+            # Safe in-place migration for databases created by the earlier Tracepoint version.
+            cur.execute('ALTER TABLE visits ADD COLUMN IF NOT EXISTS browser_latitude DOUBLE PRECISION')
+            cur.execute('ALTER TABLE visits ADD COLUMN IF NOT EXISTS browser_longitude DOUBLE PRECISION')
+            cur.execute('ALTER TABLE visits ADD COLUMN IF NOT EXISTS browser_accuracy DOUBLE PRECISION')
+            cur.execute('ALTER TABLE visits ADD COLUMN IF NOT EXISTS browser_location_status VARCHAR(24)')
             cur.execute('CREATE INDEX IF NOT EXISTS visits_link_id_idx ON visits(link_id)')
 
 def client_ip():
@@ -138,15 +145,40 @@ def visit():
             try:
                 lat = float(data['latitude']) if data.get('latitude') is not None else None
                 lon = float(data['longitude']) if data.get('longitude') is not None else None
+                if lat is not None and not -90 <= lat <= 90: lat = None
+                if lon is not None and not -180 <= lon <= 180: lon = None
             except (TypeError, ValueError):
                 lat, lon = None, None
+
+            # Precise/browser coordinates are accepted only when the browser reports
+            # that the visitor granted location permission. The raw IP is never persisted.
+            browser_status = str(body.get('browser_location_status', 'not_requested'))[:24]
+            allowed_statuses = {'granted', 'denied', 'timeout', 'unavailable', 'unsupported'}
+            if browser_status not in allowed_statuses:
+                browser_status = 'unavailable'
+            browser_lat = browser_lon = browser_accuracy = None
+            if browser_status == 'granted':
+                try:
+                    browser_lat = float(body.get('browser_latitude'))
+                    browser_lon = float(body.get('browser_longitude'))
+                    browser_accuracy = float(body.get('browser_accuracy'))
+                    if not (-90 <= browser_lat <= 90 and -180 <= browser_lon <= 180):
+                        raise ValueError('Invalid coordinates')
+                    if not (0 < browser_accuracy <= 100000):
+                        raise ValueError('Invalid accuracy')
+                except (TypeError, ValueError):
+                    browser_lat = browser_lon = browser_accuracy = None
+                    browser_status = 'unavailable'
+
             cur.execute('''INSERT INTO visits
-                (link_id, city, region, country, country_code, latitude, longitude, timezone, network)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                (link_id, city, region, country, country_code, latitude, longitude, timezone, network,
+                 browser_latitude, browser_longitude, browser_accuracy, browser_location_status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
                 (link['id'], short(data.get('city')), short(data.get('region')),
                  short(data.get('country_name')), short(data.get('country_code')),
-                 lat, lon, short(data.get('timezone')), short(data.get('org'))))
-    return jsonify(ok=True, label=link['label'])
+                 lat, lon, short(data.get('timezone')), short(data.get('org')),
+                 browser_lat, browser_lon, browser_accuracy, browser_status))
+    return jsonify(ok=True, label=link['label'], browser_location_status=browser_status)
 
 @app.get('/api/admin/overview')
 @admin_required
@@ -158,7 +190,9 @@ def overview():
                            GROUP BY l.id ORDER BY l.id DESC''')
             links = cur.fetchall()
             cur.execute('''SELECT v.id,v.visited,v.city,v.region,v.country,v.country_code,
-                           v.latitude,v.longitude,v.timezone,v.network,l.label,l.token
+                           v.latitude,v.longitude,v.timezone,v.network,
+                           v.browser_latitude,v.browser_longitude,v.browser_accuracy,
+                           v.browser_location_status,l.label,l.token
                            FROM visits v JOIN links l ON l.id=v.link_id
                            ORDER BY v.id DESC LIMIT 200''')
             visits = cur.fetchall()

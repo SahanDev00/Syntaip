@@ -1,0 +1,16 @@
+TRACEPOINT BACKEND UPDATE
+
+1. Push the updated backend files to the GitHub repository connected to Railway.
+2. Confirm Railway's Root Directory points to the folder containing app.py and requirements.txt.
+3. Keep the Start Command:
+   gunicorn app:app --bind 0.0.0.0:$PORT
+4. Keep these Railway variables configured:
+   APP_SECRET (32+ characters)
+   ADMIN_PASSWORD
+   DATABASE_URL (Neon PostgreSQL connection string)
+   ALLOWED_ORIGINS (comma-separated exact Netlify origins)
+   PUBLIC_SITE_URL (friend-facing Netlify URL)
+5. Redeploy. On startup, app.py adds the new browser-location columns to the existing visits table using ALTER TABLE IF NOT EXISTS. Existing visit history is preserved.
+6. Check https://YOUR-RAILWAY-DOMAIN/api/health.
+
+The visitor page must be served over HTTPS for browser geolocation. Browser location is requested automatically after the explanatory notice is displayed. The visitor must approve the browser's native permission prompt. If denied, the backend records only approximate IP geolocation. Raw IP addresses are not persisted.
